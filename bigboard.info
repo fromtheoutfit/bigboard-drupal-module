@@ -1,0 +1,4 @@
+name = BigBoard
+description = Update Bigboard.us when your content changes.
+core = 7.x
+version = 1.0.0

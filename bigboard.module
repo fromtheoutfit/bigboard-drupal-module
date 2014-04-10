@@ -1,0 +1,286 @@
+<?php
+/*
+ __    __                                   __       ___     __
+/\ \__/\ \                                 /\ \__  /'___\ __/\ \__
+\ \ ,_\ \ \___      __         ___   __  __\ \ ,_\/\ \__//\_\ \ ,_\
+ \ \ \/\ \  _ `\  /'__`\      / __`\/\ \/\ \\ \ \/\ \ ,__\/\ \ \ \/
+  \ \ \_\ \ \ \ \/\  __/     /\ \L\ \ \ \_\ \\ \ \_\ \ \_/\ \ \ \ \_
+   \ \__\\ \_\ \_\ \____\    \ \____/\ \____/ \ \__\\ \_\  \ \_\ \__\
+    \/__/ \/_/\/_/\/____/     \/___/  \/___/   \/__/ \/_/   \/_/\/__/
+
+Description:		BigBoard Module for Drupal
+Developer:			Michael Witwicki | The Outfit, Inc.
+Website:			fromtheoutfit.com
+Contact:			hello@fromtheoutfit.com  / 617.459.4578
+*/
+
+/*
+ * @file
+ * A module which updates BigBoard.us when your content changes.
+ */
+
+/**
+ * Implements hook_help().
+ * Displays help and module information.
+ *
+ * @param path
+ *   Which path of the site we're using to display help
+ * @param arg
+ *   Array that holds the current path as returned from arg() function
+ * @return string
+ */
+function bigboard_help($path, $arg)
+{
+    switch ($path)
+    {
+        case "admin/help#bigboard":
+            return '<p>' . t('Updates <a href="https://bigboard.us">BigBoard.us</a> when your content changes') . '</p>';
+            break;
+    }
+}
+
+/**
+ * Implements hook_menu().
+ */
+function bigboard_menu()
+{
+    $items                                   = array();
+    $items['admin/config/services/bigboard'] = array(
+        'title'            => 'BigBoard Settings',
+        'description'      => 'Configuration for BigBoard module',
+        'page callback'    => 'drupal_get_form',
+        'page arguments'   => array('bigboard_form'),
+        'access arguments' => array('access administration pages'),
+        'type'             => MENU_NORMAL_ITEM,
+    );
+    return $items;
+}
+
+/**
+ * Page callback: Current posts settings
+ *
+ * @see bigboard_menu()
+ */
+function bigboard_form($form, &$form_state)
+{
+    $node_types = node_type_get_types();
+
+    $form['bigboard_access_token'] = array(
+        '#type'          => 'textfield',
+        '#title'         => t('Access Token'),
+        '#default_value' => variable_get('bigboard_access_token', ''),
+        '#size'          => 50,
+        '#maxlength'     => 50,
+        '#description'   => t('To connect your site to BigBoard - go to Account -> Services in BigBoard and Connect a Custom Service. Paste your Access Token below'),
+        '#required'      => TRUE,
+    );
+
+    foreach ($node_types as $node_type)
+    {
+        $form['bigboard_config_' . $node_type->type] = array(
+            '#type'          => 'checkboxes',
+            '#title'         => ucwords($node_type->name) . ' ' . t('Options'),
+            '#default_value' => variable_get('bigboard_config_' . $node_type->type, ''),
+            '#options'       => array(
+                'created'   => ucwords($node_type->name) . ' ' . t('Created'),
+                'updated'   => ucwords($node_type->name) . ' ' . t('Updated'),
+                'commented' => ucwords($node_type->name) . ' ' . t('Commented'),
+            ),
+            '#description'   => t('Select when you would like this content type to update BigBoard.us'),
+            '#required'      => FALSE,
+        );
+    }
+
+    return system_settings_form($form);
+}
+
+/**
+ * Implements hook_node_insert().
+ */
+function bigboard_node_insert($node)
+{
+
+    //  check the configuration to see if we should post this to bigboard
+    if (bigboard_submission_check($node->type, 'created'))
+    {
+        // globals
+        global $user;
+
+        // variables
+        $node_type = node_type_get_name($node);
+
+        // get the url
+        $url = bigboard_url($node);
+
+        // send it to bigboard
+        bigboard($user->mail, $node->title, ucwords($node_type) . ' ' . t('Created'), $url);
+    }
+
+}
+
+/**
+ * Implements hook_node_update().
+ */
+function bigboard_node_update($node)
+{
+    //  check the configuration to see if we should post this to bigboard
+    if (bigboard_submission_check($node->type, 'updated'))
+    {
+        // globals
+        global $user;
+
+        // variables
+        $node_type = node_type_get_name($node);
+
+        // get the url
+        $url = bigboard_url($node);
+
+        // send it to bigboard
+        bigboard($user->mail, $node->title, ucwords($node_type) . ' ' . t('Updated'), $url);
+    }
+}
+
+/**
+ * Implements hook_comment_insert().
+ */
+function bigboard_comment_insert($comment)
+{
+    // globals
+    global $user;
+
+    // variables
+    $email = '';
+
+    // let's do our best to get the email address for this user
+    switch (TRUE)
+    {
+        case (isset($user->mail) && filter_var($user->mail, FILTER_VALIDATE_EMAIL)):
+            $email = $user->mail;
+            break;
+        case (isset($comment->mail) && filter_var($comment->mail, FILTER_VALIDATE_EMAIL)):
+            $email = $comment->mail;
+            break;
+    }
+
+    // We can only proceed if we have a valid email
+    if (strlen($email) > 0)
+    {
+        // variables
+        $node      = node_load((int)$comment->nid);
+        $node_type = node_type_get_name($node);
+
+        //  check the configuration to see if we should post this to bigboard
+        if (bigboard_submission_check($node->type, 'commented'))
+        {
+            // get the url
+            $url = bigboard_url($node);
+
+            // send it to bigboard
+            bigboard($email, $node->title, ucwords($node_type) . ' ' . t('Commented'), $url . '#comment-' . $comment->cid);
+        }
+    }
+
+}
+
+/**
+ * Call the BigBoard API
+ *
+ * @param string $email
+ * @param string $summary
+ * @param string $label
+ * @param string $url
+ * @return void
+ */
+function bigboard($email, $summary, $label, $url)
+{
+    $access_token = variable_get('bigboard_access_token');
+    $endpoint     = 'https://bigboard.us/api';
+
+    if (isset($access_token))
+    {
+
+        // set event information
+        $p['events'][0] = array(
+            'email'   => $email,
+            'summary' => $summary,
+            'label'   => $label,
+            'url'     => $url,
+            'time'    => time(),
+        );
+
+        // set headers
+        $headers[] = 'Content-Type: application/json';
+        $headers[] = 'Accept: application/json';
+        $headers[] = 'X-BigBoard-Token: ' . $access_token;
+
+        // get it on the board!
+        $ch = curl_init();
+
+        $options = array(
+            CURLOPT_POST           => 1,
+            CURLOPT_URL            => $endpoint,
+            CURLOPT_RETURNTRANSFER => TRUE,
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_TIMEOUT        => 60,
+            CURLOPT_SSL_VERIFYHOST => FALSE,
+            CURLOPT_SSL_VERIFYPEER => FALSE,
+            CURLOPT_POSTFIELDS     => json_encode($p),
+            CURLOPT_USERAGENT      => 'BigBoard (bigboard@fromtheoutfit.com)',
+            CURLOPT_FOLLOWLOCATION => TRUE
+        );
+
+        curl_setopt_array($ch, $options);
+        $data = json_decode(curl_exec($ch));
+    }
+
+}
+
+/**
+ * Returns the URL to post to BigBoard
+ *
+ * @param object $node
+ * @return string
+ */
+
+function bigboard_url($node)
+{
+    global $base_url;
+
+    $url = rtrim($base_url, '/') . '/';
+
+    if (isset($node->path) && strlen($node->path['alias']) > 0)
+    {
+        $url .= $node->path['alias'];
+    }
+    else
+    {
+        $url .= 'node/' . $node->nid;
+    }
+
+    return $url;
+}
+
+/**
+ * Determines if a particular content type should update bigboard for the given hook
+ *
+ * @param string $node_type
+ * @param string $hook_type
+ * @return boolean
+ */
+
+function bigboard_submission_check($node_type = '', $hook_type = '')
+{
+    $data = FALSE;
+
+    if (strlen($node_type) > 0 && strlen($hook_type) > 0)
+    {
+        $config     = variable_get('bigboard_config_' . $node_type);
+
+        if (isset($config[$hook_type]) && (string)$config[$hook_type] == $hook_type)
+        {
+            $data = TRUE;
+        }
+    }
+
+    return $data;
+}
