@@ -1,7 +1,7 @@
 Drupal Module for BigBoard.us
 ======================
 
-Update your http://bigboard.us activity stream when anyone creates, edits or comments on Drupal content.
+Update your [BigBoard.us](http://bigboard.us) activity stream when anyone creates, edits or comments on Drupal content.
 
 ## Installation
 
